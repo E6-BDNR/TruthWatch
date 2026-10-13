@@ -17,7 +17,6 @@ TruthWatch conecta la conversación pública en **Bluesky** con la actividad edi
 7. [Consideraciones éticas](#consideraciones-éticas)
 8. [Arquitectura propuesta](#arquitectura-propuesta)
 9. [Preguntas de análisis](#preguntas-de-análisis)
-10. [Hoja de ruta](#hoja-de-ruta)
 
 ## Estado del proyecto
 
@@ -31,13 +30,13 @@ TruthWatch conecta la conversación pública en **Bluesky** con la actividad edi
 
 ## Equipo y organización
 
-El proyecto vive en la organización de GitHub [`E6-BDNR`](https://github.com/E6-BDNR), que incluye a los integrantes del equipo y al profesor.
+El proyecto vive en la organización de GitHub [`E6-BDNR`](https://github.com/E6-BDNR), que incluye a los integrantes del equipo.
 
 | Integrante | GitHub |
 | --- | --- |
-| _Nombre_ | [@aguayo-0107](https://github.com/aguayo-0107) |
-| _Nombre_ | [@shagiel-lopez](https://github.com/shagiel-lopez) |
-| _Nombre_ | [@gaticadesS](https://github.com/gaticadesS) |
+| Mariana Aguayo | [@aguayo-0107](https://github.com/aguayo-0107) |
+| Shagiel López | [@shagiel-lopez](https://github.com/shagiel-lopez) |
+| Santiago Gatica | [@gaticadesS](https://github.com/gaticadesS) |
 
 ## Selección de los streams
 
@@ -81,13 +80,13 @@ Para este proyecto usaremos solo la colección `app.bsky.feed.post`. Cada evento
 
 ### Origen y autoría
 
-- **Contenido:** como tal lo escriben los usuarios de Bluesky. Cada cuenta guarda sus datos en un *Personal Data Server* (PDS), que puede ser de Bluesky o de terceros.
+- **Contenido:** Lo escriben los usuarios de Bluesky. Cada cuenta guarda sus datos en un *Personal Data Server* (PDS), que puede ser de Bluesky o de terceros.
 - **Agregación:** los *relays* del AT Protocol recolectan los cambios de todos los PDS y producen el firehose.
 - **Servicio Jetstream:** desarrollado y operado por **Bluesky Social, PBC**, que publica instancias públicas (`jetstream1/2.us-east`, `us-west`) y el código fuente bajo licencia abierta.
 
 ### Diccionario de datos
 
-Rutas expresadas en notación de puntos sobre el JSON recibido. Los atributos marcados con % son atributos opcionales.
+Rutas expresadas en notación de puntos sobre el JSON recibido. Los atributos marcados con (opcional) no aparecen en todos los eventos.
 
 **Todos los eventos**
 
@@ -105,8 +104,8 @@ Rutas expresadas en notación de puntos sobre el JSON recibido. Los atributos ma
 | `commit.operation` | string | Operación: `create`, `update` o `delete`. |
 | `commit.collection` | string | Colección (NSID) del registro; aquí siempre `app.bsky.feed.post`. |
 | `commit.rkey` | string | Clave del registro dentro de la colección. `at://{did}/{collection}/{rkey}` identifica la publicación de forma única. |
-| `commit.cid` % | string | Hash de contenido (CID) del registro. Ausente en `delete`. |
-| `commit.record` % | object | Contenido de la publicación. No esta presente en `delete`. |
+| `commit.cid` (opcional) | string | Hash de contenido (CID) del registro. Ausente en `delete`. |
+| `commit.record` (opcional) | object | Contenido de la publicación. No está presente en `delete`. |
 
 **Registro `app.bsky.feed.post` (`commit.record.*`)**
 
@@ -115,28 +114,28 @@ Rutas expresadas en notación de puntos sobre el JSON recibido. Los atributos ma
 | `$type` | string | Tipo de registro, `app.bsky.feed.post`. |
 | `text` | string | Texto de la publicación (hasta 300 grafemas). |
 | `createdAt` | string (ISO 8601) | Fecha de creación **declarada por el cliente**; puede diferir de `time_us`. |
-| `langs` % | string[] | Idiomas declarados (BCP-47), p. ej. `["es"]`. Presente en ≈ 78 % de la muestra. |
-| `facets` % | object[] | Anotaciones sobre rangos de bytes del texto: menciones (`#mention` con DID), enlaces (`#link` con URI) y hashtags (`#tag`). |
-| `reply.root.uri` / `reply.root.cid` % | string | Publicación raíz del hilo, si es una respuesta. |
-| `reply.parent.uri` / `reply.parent.cid` % | string | Publicación a la que responde directamente. |
-| `embed.$type` % | string | Tipo de contenido incrustado: `images`, `external` (tarjeta de enlace), `record` (cita), `recordWithMedia` o `video`. |
-| `embed.images[]` % | object[] | Imágenes con texto alternativo (`alt`), proporción (`aspectRatio.width/height`) y referencia al blob (`mimeType`, `size`). |
-| `embed.external.uri/title/description` % | string | URL, título y descripción de la tarjeta de enlace. |
-| `embed.record.uri/cid` % | string | Publicación citada. |
-| `embed.video.*` % | object | Video: `mimeType`, `size` en bytes y proporción. |
-| `labels.values[]` % | object[] | Etiquetas de autoclasificación (p. ej. contenido sensible) puestas por el autor. |
-| `tags` % | string[] | Hashtags adicionales que no aparecen en el texto. |
+| `langs` (opcional) | string[] | Idiomas declarados (BCP-47), p. ej. `["es"]`. Presente en ≈ 78 % de la muestra. |
+| `facets` (opcional) | object[] | Anotaciones sobre rangos de bytes del texto: menciones (`#mention` con DID), enlaces (`#link` con URI) y hashtags (`#tag`). |
+| `reply.root.uri` / `reply.root.cid` (opcional) | string | Publicación raíz del hilo, si es una respuesta. |
+| `reply.parent.uri` / `reply.parent.cid` (opcional) | string | Publicación a la que responde directamente. |
+| `embed.$type` (opcional) | string | Tipo de contenido incrustado: `images`, `external` (tarjeta de enlace), `record` (cita), `recordWithMedia` o `video`. |
+| `embed.images[]` (opcional) | object[] | Imágenes con texto alternativo (`alt`), proporción (`aspectRatio.width/height`) y referencia al blob (`mimeType`, `size`). |
+| `embed.external.uri/title/description` (opcional) | string | URL, título y descripción de la tarjeta de enlace. |
+| `embed.record.uri/cid` (opcional) | string | Publicación citada. |
+| `embed.video.*` (opcional) | object | Video: `mimeType`, `size` en bytes y proporción. |
+| `labels.values[]` (opcional) | object[] | Etiquetas de autoclasificación (p. ej. contenido sensible) puestas por el autor. |
+| `tags` (opcional) | string[] | Hashtags adicionales que no aparecen en el texto. |
 
 **Eventos `identity` y `account`**
 
 | Atributo | Tipo | Descripción |
 | --- | --- | --- |
 | `identity.did` | string | DID cuya identidad cambió. |
-| `identity.handle` % | string | Nuevo *handle* (p. ej. `usuario.bsky.social`). |
+| `identity.handle` (opcional) | string | Nuevo *handle* (p. ej. `usuario.bsky.social`). |
 | `identity.seq` | int | Número de secuencia del evento en el relay. |
 | `identity.time` | string | Momento del cambio. |
 | `account.active` | bool | Indica si la cuenta está activa. |
-| `account.status` % | string | Motivo de inactividad: `takendown`, `suspended`, `deleted` o `deactivated`. |
+| `account.status` (opcional) | string | Motivo de inactividad: `takendown`, `suspended`, `deleted` o `deactivated`. |
 | `account.did`, `account.seq`, `account.time` | string / int / string | Igual que en `identity`. |
 
 ### Clasificación de variables
@@ -154,7 +153,7 @@ Rutas expresadas en notación de puntos sobre el JSON recibido. Los atributos ma
 
 ### Resumen
 
-**EventStreams** es un servicio de la Wikimedia Foundation que expone, mediante **Server-Sent Events (SSE)**, los eventos internos de sus plataformas. El stream `recentchange` emite **cada cambio realizado en cualquiera de las más de 800 wikis de Wikimedia**: Wikipedia en todos los idiomas, Wikidata, Wikimedia Commons, Wiktionary, entre otras.
+**EventStreams** es un servicio de la Wikimedia Foundation que expone, mediante **Server-Sent Events (SSE)**, los eventos internos de sus plataformas. El stream `recentchange` emite **cada cambio realizado en cualquiera de los cientos de wikis de Wikimedia**: Wikipedia en todos los idiomas, Wikidata, Wikimedia Commons, Wiktionary, entre otras.
 
 Cada evento describe un cambio: qué página se modificó, quién lo hizo, si fue un bot, el comentario de edición, el tamaño antes y después y los identificadores de revisión. Hay cinco tipos: `edit` (edición), `new` (página nueva), `log` (acciones administrativas como bloqueos, borrados o protecciones), `categorize` (cambio de categoría) y `external`.
 
@@ -165,7 +164,7 @@ Cada evento describe un cambio: qué página se modificó, quién lo hizo, si fu
 
 ### Diccionario de datos
 
-Los atributos marcados con % solo aparecen en algunos tipos de evento.
+Los atributos marcados con (opcional) solo aparecen en algunos tipos de evento.
 
 **Metadatos del evento (`meta.*`)**
 
@@ -185,7 +184,7 @@ Los atributos marcados con % solo aparecen en algunos tipos de evento.
 
 | Atributo | Tipo | Descripción |
 | --- | --- | --- |
-| `id` % | int | Identificador del cambio en la tabla `recentchanges` de esa wiki. |
+| `id` (opcional) | int | Identificador del cambio en la tabla `recentchanges` de esa wiki. |
 | `type` | string | `edit`, `new`, `log`, `categorize` o `external`. |
 | `namespace` | int | Espacio de nombres: `0` artículo, `1` discusión, `2` usuario, `4` proyecto, `6` archivo, `14` categoría, etc. |
 | `title` | string | Título de la página, con prefijo de espacio de nombres. |
@@ -195,15 +194,15 @@ Los atributos marcados con % solo aparecen en algunos tipos de evento.
 | `timestamp` | int | Marca de tiempo **Unix en segundos** del cambio. |
 | `user` | string | Nombre de usuario, cuenta temporal (`~2026-…`) o dirección IP del editor. |
 | `bot` | bool | Indica si la cuenta tiene el permiso de bot. |
-| `minor` % | bool | Edición marcada como menor. Solo en `edit` y `new`. |
-| `patrolled` % | bool | Indica si el cambio fue revisado por un patrullero. Solo en wikis con patrullaje habilitado. |
-| `length.old` / `length.new` % | int | Tamaño de la página en bytes antes y después. Solo en `edit` y `new`. |
-| `revision.old` / `revision.new` % | int | Identificadores de la revisión anterior y la nueva. Solo en `edit` y `new`. |
-| `notify_url` % | string | URL del *diff* del cambio. |
+| `minor` (opcional) | bool | Edición marcada como menor. Solo en `edit` y `new`. |
+| `patrolled` (opcional) | bool | Indica si el cambio fue revisado por un patrullero. Solo en wikis con patrullaje habilitado. |
+| `length.old` / `length.new` (opcional) | int | Tamaño de la página en bytes antes y después. Solo en `edit` y `new`. |
+| `revision.old` / `revision.new` (opcional) | int | Identificadores de la revisión anterior y la nueva. Solo en `edit` y `new`. |
+| `notify_url` (opcional) | string | URL del *diff* del cambio. |
 | `server_url`, `server_name`, `server_script_path` | string | Datos del servidor de la wiki. |
 | `wiki` | string | Identificador de la base de datos de la wiki, p. ej. `eswiki`, `enwiki`, `wikidatawiki`. |
 
-**Eventos `log` (%)**
+**Eventos `log` (opcionales)**
 
 | Atributo | Tipo | Descripción |
 | --- | --- | --- |
@@ -233,7 +232,7 @@ Los atributos marcados con % solo aparecen en algunos tipos de evento.
 
 **Derecho al olvido**
 
-- Jetstream emite eventos `delete` cuando un usuario borra una publicación, y eventos `account` cuando una cuenta se desactiva o es suspendida. **Respetaremos esos borrados**: no conservaremos ningúna parte del contenido de publicaciones que su autor eliminó.
+- Jetstream emite eventos `delete` cuando un usuario borra una publicación, y eventos `account` cuando una cuenta se desactiva o es suspendida. **Respetaremos esos borrados**: no conservaremos ninguna parte del contenido de publicaciones que su autor eliminó.
 
 **Sesgos**
 

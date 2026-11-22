@@ -58,7 +58,96 @@ x-ingest: &ingest
   env_file: .env
   depends_on: [kafka-1, kafka-2, kafka-3]
 
+# Spark standalone: el driver corre en el master con spark-submit
+x-spark: &spark
+  image: apache/spark:3.5.7-scala2.12-java17-python3-ubuntu
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    SPARK_CONF_DIR: /tmp/conf
+  volumes: [./spark/spark-defaults.conf:/spark-defaults.conf:ro, ./processing:/jobs:ro]
+  # El secreto compartido viene del .env y se agrega a la configuración al arrancar
+  entrypoint:
+    - bash
+    - -c
+    - mkdir -p /tmp/conf && cp /spark-defaults.conf /tmp/conf && echo "spark.authenticate.secret $$SPARK_SECRET" >> /tmp/conf/spark-defaults.conf && exec "$$@"
+    - --
+
+x-spark-worker: &spark-worker
+  <<: *spark
+  mem_limit: 2560m
+  command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --cores 2 --memory 2g
+  depends_on: [spark-master]
+
+# Cassandra con usuario y contraseña obligatorios
+x-cassandra: &cassandra
+  image: cassandra:5.0
+  restart: unless-stopped
+  mem_limit: 1536m
+  environment:
+    CASSANDRA_CLUSTER_NAME: truthwatch
+    CASSANDRA_SEEDS: cassandra-1
+    CASSANDRA_DC: dc1
+    CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+    MAX_HEAP_SIZE: ${CASSANDRA_HEAP:-512M}
+    HEAP_NEWSIZE: 128M
+  command:
+    - bash
+    - -c
+    - >-
+      sed -i -e 's/^authenticator:.*/authenticator: PasswordAuthenticator/'
+      -e 's/^authorizer:.*/authorizer: CassandraAuthorizer/' /etc/cassandra/cassandra.yaml
+      && exec docker-entrypoint.sh cassandra -f
+  healthcheck:
+    test: nodetool info | grep -q "Native Transport active.*true"
+    interval: 15s
+    start_period: 60s
+    retries: 20
+
 services:
+  spark-master:
+    <<: *spark
+    container_name: tw-spark-master
+    mem_limit: 1536m
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    ports: ["127.0.0.1:8080:8080"]
+  spark-worker-1:
+    <<: *spark-worker
+    container_name: tw-spark-worker-1
+  spark-worker-2:
+    <<: *spark-worker
+    container_name: tw-spark-worker-2
+
+  # Se levantan uno tras otro: Cassandra no admite que varios nodos se unan a la vez
+  cassandra-1:
+    <<: *cassandra
+    container_name: tw-cassandra-1
+    volumes: [cassandra-1:/var/lib/cassandra]
+  cassandra-2:
+    <<: *cassandra
+    container_name: tw-cassandra-2
+    volumes: [cassandra-2:/var/lib/cassandra]
+    depends_on: { cassandra-1: { condition: service_healthy } }
+  cassandra-3:
+    <<: *cassandra
+    container_name: tw-cassandra-3
+    volumes: [cassandra-3:/var/lib/cassandra]
+    depends_on: { cassandra-2: { condition: service_healthy } }
+
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: tw-neo4j
+    restart: unless-stopped
+    mem_limit: 2g
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*,gds.*
+      NEO4J_server_memory_heap_max__size: 1g
+      NEO4J_server_memory_pagecache_size: 512m
+    ports: ["127.0.0.1:7474:7474", "127.0.0.1:7687:7687"]
+    volumes: [neo4j:/data]
+
   kafka-1:
     <<: *kafka
     container_name: tw-kafka-1
@@ -151,6 +240,10 @@ services:
     volumes: [./mongo/keyfile:/keyfile:ro]
 
 volumes:
+  cassandra-1:
+  cassandra-2:
+  cassandra-3:
+  neo4j:
   kafka-1:
   kafka-2:
   kafka-3:

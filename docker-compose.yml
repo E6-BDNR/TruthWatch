@@ -26,7 +26,79 @@ x-shard2: &shard2
   <<: *mongo
   command: mongod --shardsvr --replSet s2 --wiredTigerCacheSizeGB ${MONGO_CACHE_GB:-0.25}
 
+# Kafka en modo KRaft: cada nodo es broker y controller a la vez
+x-kafka: &kafka
+  image: apache/kafka:3.9.1
+  restart: unless-stopped
+  mem_limit: 1g
+
+x-kafka-env: &kafka-env
+  CLUSTER_ID: 6Ep9sIrpSVe4paJBKmjHPQ
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+  KAFKA_LOG_DIRS: /var/lib/kafka/data
+  KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+  # Cada mensaje vive en 3 brokers y se confirma cuando lo tienen al menos 2
+  KAFKA_NUM_PARTITIONS: 3
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  KAFKA_LOG_RETENTION_HOURS: 48
+
+# Captura: una imagen, un script por fuente
+x-ingest: &ingest
+  build: ./ingestion
+  restart: unless-stopped
+  mem_limit: 256m
+  env_file: .env
+  depends_on: [kafka-1, kafka-2, kafka-3]
+
 services:
+  kafka-1:
+    <<: *kafka
+    container_name: tw-kafka-1
+    environment: { <<: *kafka-env, KAFKA_NODE_ID: 1, KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092 }
+    volumes: [kafka-1:/var/lib/kafka/data]
+  kafka-2:
+    <<: *kafka
+    container_name: tw-kafka-2
+    environment: { <<: *kafka-env, KAFKA_NODE_ID: 2, KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092 }
+    volumes: [kafka-2:/var/lib/kafka/data]
+  kafka-3:
+    <<: *kafka
+    container_name: tw-kafka-3
+    environment: { <<: *kafka-env, KAFKA_NODE_ID: 3, KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092 }
+    volumes: [kafka-3:/var/lib/kafka/data]
+
+  bluesky:
+    <<: *ingest
+    container_name: tw-bluesky
+    command: python bluesky.py
+  wikimedia:
+    <<: *ingest
+    container_name: tw-wikimedia
+    command: python wikimedia.py
+  mastodon:
+    <<: *ingest
+    container_name: tw-mastodon
+    command: python mastodon.py
+  gdelt:
+    <<: *ingest
+    container_name: tw-gdelt
+    command: python gdelt.py
+
+  # Kafka -> MongoDB
+  sink:
+    <<: *ingest
+    container_name: tw-sink
+    command: python sink.py
+    depends_on: [kafka-1, kafka-2, kafka-3, mongo-router]
+
   # Config servers
   mongo-cfg-1:
     <<: *config
@@ -79,6 +151,9 @@ services:
     volumes: [./mongo/keyfile:/keyfile:ro]
 
 volumes:
+  kafka-1:
+  kafka-2:
+  kafka-3:
   mongo-cfg-1:
   mongo-cfg-2:
   mongo-cfg-3:

@@ -13,6 +13,12 @@ for (const src of sources) {
   db.getSiblingDB('raw')[src].createIndex({ received_at: 1 })
 }
 
+// Mastodon no expone borrados sin cuenta: sus posts crudos se eliminan solos a los 30 días
+db.getSiblingDB('raw').runCommand({
+  collMod: 'mastodon',
+  index: { keyPattern: { received_at: 1 }, expireAfterSeconds: 30 * 24 * 3600 },
+})
+
 // Roles y usuarios
 const admin = db.getSiblingDB('admin')
 

@@ -4,7 +4,7 @@
 
 Proyecto final de **Bases de Datos No Relacionales - Otoño 2026**.
 
-TruthWatch conecta la conversación pública en **Bluesky** con la actividad editorial de **Wikipedia** para identificar coincidencias, cambios bruscos y patrones que merezcan revisión humana.
+TruthWatch conecta la conversación pública en **Bluesky** y **Mastodon** con la actividad editorial de **Wikipedia** y la cobertura de medios de **GDELT** para identificar coincidencias, cambios bruscos y patrones que merezcan revisión humana.
 
 ## Contenido
 
@@ -14,17 +14,24 @@ TruthWatch conecta la conversación pública en **Bluesky** con la actividad edi
 4. [Enlaces a APIs y documentación](#enlaces-a-apis-y-documentación)
 5. [Stream 1 · Bluesky Jetstream](#stream-1--bluesky-jetstream)
 6. [Stream 2 · Wikimedia Recent Changes](#stream-2--wikimedia-recent-changes)
-7. [Consideraciones éticas](#consideraciones-éticas)
-8. [Arquitectura propuesta](#arquitectura-propuesta)
-9. [Preguntas de análisis](#preguntas-de-análisis)
+7. [Stream 3 · Mastodon](#stream-3--mastodon)
+8. [Stream 4 · GDELT](#stream-4--gdelt)
+9. [Consideraciones éticas](#consideraciones-éticas)
+10. [Arquitectura](#arquitectura)
+11. [Justificación CAP](#justificación-cap)
+12. [Control de accesos](#control-de-accesos)
+13. [Despliegue](#despliegue)
+14. [Pruebas de la infraestructura](#pruebas-de-la-infraestructura)
+15. [Limitaciones](#limitaciones)
+16. [Preguntas de análisis](#preguntas-de-análisis)
 
 ## Estado del proyecto
 
 | Etapa | Descripción | Estado |
 | --- | --- | --- |
 | 1 | Selección del stream de datos | **Entregada** |
-| 2 | Infraestructura y configuración | Pendiente |
-| 3 | Implementación de la capa de ingesta | Pendiente |
+| 2 | Infraestructura y configuración | **Entregada** |
+| 3 | Implementación de la capa de ingesta | En curso (consumidores funcionando) |
 | 4 | Capa de procesamiento para analíticos | Pendiente |
 | 5 | Análisis de resultados | Pendiente |
 
@@ -40,14 +47,14 @@ El proyecto vive en la organización de GitHub [`E6-BDNR`](https://github.com/E6
 
 ## Selección de los streams
 
-Combinamos dos streams públicos y reales. Ambos cumplen los requisitos del curso de forma individual, pero los usamos en conjunto porque la pregunta de nuestro proyecto exige observar las dos plataformas al mismo tiempo.
+Combinamos cuatro fuentes públicas y reales. Bluesky y Wikimedia cumplen los requisitos del curso por sí solas y son el centro del proyecto. Mastodon agrega una segunda red social, para ver si una narrativa aparece en dos plataformas a la vez, y GDELT da el contexto de noticias, para distinguir una anomalía de una noticia real.
 
-| Requisito | Bluesky Jetstream | Wikimedia Recent Changes |
-| --- | --- | --- |
-| Datos reales | Publicaciones reales de usuarios de Bluesky | Cambios reales en wikis de Wikimedia |
-| ≥ 1 evento/s en promedio | **≈ 52 eventos/s** (1,039 eventos en 20 s) | **≈ 21 eventos/s** (423 eventos en 20 s) |
-| ≥ 10 atributos por evento | 12 atributos en una publicación de texto simple; más con respuestas, enlaces o imágenes | 31 atributos en un evento `edit` típico |
-| Interés para el equipo | Conversación pública y difusión de narrativas | Disputa y evolución del conocimiento enciclopédico |
+| Requisito | Bluesky Jetstream | Wikimedia Recent Changes | Mastodon | GDELT |
+| --- | --- | --- | --- | --- |
+| Datos reales | Publicaciones de usuarios de Bluesky | Cambios en wikis de Wikimedia | Publicaciones del timeline federado de 4 instancias | Eventos extraídos de noticias de todo el mundo |
+| Eventos/s (medido en ingesta, 10 min) | **≈ 38** | **≈ 31** | **≈ 2.8** | ≈ 0.6 en promedio, en lotes cada 15 min |
+| Atributos por evento | 12–19 | 31–35 | ≈ 60 | 61 |
+| Interés para el equipo | Conversación pública y difusión de narrativas | Disputa y evolución del conocimiento enciclopédico | Conversación en una red federada distinta | Cobertura de medios como línea base |
 
 ## Enlaces a APIs y documentación
 
@@ -67,6 +74,20 @@ Combinamos dos streams públicos y reales. Ambos cumplen los requisitos del curs
 - [Esquema `mediawiki/recentchange`](https://github.com/wikimedia/mediawiki-event-schemas/blob/master/jsonschema/mediawiki/recentchange/current.yaml)
 - [Manual de la tabla `recentchanges` de MediaWiki](https://www.mediawiki.org/wiki/Manual:Recentchanges_table)
 - [Visualización en vivo (Hatnote)](http://listen.hatnote.com/)
+
+**Mastodon**
+
+- Endpoint utilizado: `https://{instancia}/api/v1/timelines/public` en `mas.to`, `mastodon.world`, `social.vivaldi.net` y `universeodon.com`
+- [API de timelines](https://docs.joinmastodon.org/methods/timelines/)
+- [Entidad `Status`](https://docs.joinmastodon.org/entities/Status/)
+- [Entidad `Account`](https://docs.joinmastodon.org/entities/Account/)
+
+**GDELT 2.0**
+
+- Endpoint utilizado: `http://data.gdeltproject.org/gdeltv2/lastupdate.txt`
+- [Proyecto GDELT](https://www.gdeltproject.org/)
+- [Codebook de eventos 2.0](http://data.gdeltproject.org/documentation/GDELT-Event_Codebook-V2.0.pdf)
+- [Manual CAMEO](http://data.gdeltproject.org/documentation/CAMEO.Manual.1.1b3.pdf)
 
 ---
 
@@ -223,6 +244,103 @@ Los atributos marcados con (opcional) solo aparecen en algunos tipos de evento.
 
 ---
 
+## Stream 3 · Mastodon
+
+### Resumen
+
+Mastodon es una red social federada: miles de servidores independientes (*instancias*) que intercambian publicaciones con el protocolo ActivityPub. Cada instancia expone un **timeline federado** con las publicaciones públicas que conoce, tanto de sus usuarios como de otras instancias.
+
+Consultamos cada 5 segundos el timeline federado de cuatro instancias grandes que lo tienen abierto. Cada evento es una publicación (*status*) con su texto, idioma, autor, menciones, hashtags, archivos, encuestas y contadores de interacción. Una misma publicación puede llegar por varias instancias; se identifica por su `uri`, que es global.
+
+### Origen y autoría
+
+- **Contenido:** lo escriben los usuarios de cada instancia.
+- **Publicación:** cada instancia es operada por un administrador o una organización distinta (por ejemplo, Vivaldi Technologies opera `social.vivaldi.net`). El software y la API los mantiene Mastodon gGmbH.
+
+### Diccionario de datos
+
+Guardamos la respuesta completa de la API dentro de `data.status`, más la instancia de donde vino en `data.instance`.
+
+| Atributo | Tipo | Descripción |
+| --- | --- | --- |
+| `id` | string | Identificador local del post en la instancia que lo reporta. |
+| `uri` | string | Identificador global (ActivityPub) del post. |
+| `url` | string | Enlace público al post. |
+| `created_at` | string (ISO 8601) | Fecha de publicación. |
+| `edited_at` (opcional) | string | Fecha de la última edición. |
+| `content` | string (HTML) | Texto del post. |
+| `spoiler_text` | string | Advertencia de contenido escrita por el autor. |
+| `sensitive` | bool | Marcado como sensible por el autor. |
+| `visibility` | string | `public`, `unlisted`, `private` o `direct`; aquí siempre `public`. |
+| `language` (opcional) | string | Idioma declarado (ISO 639-1). |
+| `in_reply_to_id` / `in_reply_to_account_id` (opcional) | string | Post y cuenta a los que responde. |
+| `replies_count`, `reblogs_count`, `favourites_count` | int | Respuestas, reblogs y favoritos al momento de la consulta. |
+| `account.*` | object | Autor: `acct`, `display_name`, `bot`, `created_at`, `followers_count`, `following_count`, `statuses_count`, `note`, etc. |
+| `mentions[]` | object[] | Cuentas mencionadas. |
+| `tags[]` | object[] | Hashtags (`name`, `url`). |
+| `media_attachments[]` | object[] | Imágenes, video o audio con `type`, `url` y `description` (texto alternativo). |
+| `card` (opcional) | object | Vista previa de enlace: `url`, `title`, `description`, `provider_name`. |
+| `poll` (opcional) | object | Encuesta con opciones y votos. |
+| `reblog` (opcional) | object | Post original cuando el evento es un reblog. |
+
+### Clasificación de variables
+
+| Categoría | Atributos |
+| --- | --- |
+| **Cuantitativas** | `replies_count`, `reblogs_count`, `favourites_count`, `account.followers_count`, `account.following_count`, `account.statuses_count`. Derivadas: longitud del texto, número de menciones, hashtags y archivos. |
+| **Cualitativas** | `visibility`, `language`, `sensitive`, `account.bot`, instancia de origen, hashtags, dominio de `card.url`. `id`, `uri` y `account.id` son nominales. |
+| **Texto no estructurado** | `content`, `spoiler_text`, `account.note`, `card.title`, `card.description`, `media_attachments[].description`. |
+| **Series temporales** | `created_at`, `edited_at`, `account.created_at`, `account.last_status_at`. |
+
+---
+
+## Stream 4 · GDELT
+
+### Resumen
+
+GDELT (*Global Database of Events, Language, and Tone*) monitorea noticias de radio, prensa y web en más de 100 idiomas y extrae de ellas **eventos**: quién hizo qué a quién, dónde y con qué tono. Cada 15 minutos publica un archivo nuevo con los eventos detectados en ese intervalo, codificados con la taxonomía CAMEO.
+
+No es un stream continuo sino una serie de micro-lotes. Lo usamos como **línea base de noticias**: si un pico en Bluesky o Wikipedia coincide con muchos eventos de GDELT sobre el mismo tema, probablemente se explica por una noticia real y no por actividad coordinada.
+
+### Origen y autoría
+
+- **Proyecto:** The GDELT Project, creado por Kalev H. Leetaru, con apoyo de Google Jigsaw.
+- **Contenido:** se genera automáticamente a partir de artículos de medios de comunicación; cada evento incluye la URL de la nota de origen.
+
+### Diccionario de datos
+
+El archivo es un CSV de 61 columnas sin encabezado; el consumidor les asigna nombre según el codebook. Los atributos de actor se repiten para `Actor1` y `Actor2`, y los geográficos para `Actor1Geo`, `Actor2Geo` y `ActionGeo`.
+
+| Atributo | Tipo | Descripción |
+| --- | --- | --- |
+| `GLOBALEVENTID` | int | Identificador único del evento. |
+| `SQLDATE`, `MonthYear`, `Year`, `FractionDate` | int / float | Fecha del evento en distintos formatos. |
+| `DATEADDED` | int | Momento (UTC, `YYYYMMDDHHMMSS`) en que GDELT agregó el evento. |
+| `Actor*Code`, `Actor*Name` | string | Código CAMEO y nombre del actor. |
+| `Actor*CountryCode`, `Actor*KnownGroupCode`, `Actor*EthnicCode` | string | País, grupo conocido y etnia del actor. |
+| `Actor*Religion1Code`, `Actor*Religion2Code` | string | Afiliación religiosa. |
+| `Actor*Type1Code` … `Type3Code` | string | Tipo de actor (gobierno, militar, medios, etc.). |
+| `IsRootEvent` | int | 1 si el evento aparece al inicio de la nota. |
+| `EventCode`, `EventBaseCode`, `EventRootCode` | string | Acción CAMEO en tres niveles de detalle. |
+| `QuadClass` | int | 1 cooperación verbal, 2 cooperación material, 3 conflicto verbal, 4 conflicto material. |
+| `GoldsteinScale` | float | Impacto teórico en la estabilidad de un país (−10 a +10). |
+| `NumMentions`, `NumSources`, `NumArticles` | int | Menciones, fuentes y artículos que reportan el evento. |
+| `AvgTone` | float | Tono promedio de los artículos (−100 a +100). |
+| `*Geo_Type`, `*Geo_FullName`, `*Geo_CountryCode`, `*Geo_ADM1Code`, `*Geo_ADM2Code` | int / string | Ubicación del actor o de la acción. |
+| `*Geo_Lat`, `*Geo_Long`, `*Geo_FeatureID` | float / string | Coordenadas e identificador del lugar. |
+| `SOURCEURL` | string | URL de la primera nota que reportó el evento. |
+
+### Clasificación de variables
+
+| Categoría | Atributos |
+| --- | --- |
+| **Cuantitativas** | `GoldsteinScale`, `NumMentions`, `NumSources`, `NumArticles`, `AvgTone`, `*Geo_Lat`, `*Geo_Long`. |
+| **Cualitativas** | Códigos de actor, país, grupo, etnia, religión y tipo; `EventCode` y sus niveles; `QuadClass`; `IsRootEvent`; `*Geo_Type`. |
+| **Texto no estructurado** | `Actor*Name`, `*Geo_FullName` y la nota enlazada en `SOURCEURL`. |
+| **Series temporales** | `SQLDATE`, `MonthYear`, `Year`, `FractionDate`, `DATEADDED`. |
+
+---
+
 ## Consideraciones éticas
 
 **Datos personales y privacidad**
@@ -233,6 +351,8 @@ Los atributos marcados con (opcional) solo aparecen en algunos tipos de evento.
 **Derecho al olvido**
 
 - Jetstream emite eventos `delete` cuando un usuario borra una publicación, y eventos `account` cuando una cuenta se desactiva o es suspendida. **Respetaremos esos borrados**: no conservaremos ninguna parte del contenido de publicaciones que su autor eliminó.
+- Mastodon solo avisa de los borrados por streaming con una cuenta en cada instancia, y la consulta pública no los incluye. Como mitigación, los posts crudos de Mastodon **se eliminan automáticamente a los 30 días** (índice TTL en MongoDB), así que nada se conserva de forma indefinida.
+- GDELT no contiene datos de personas usuarias: solo actores públicos mencionados en noticias y la URL del medio.
 
 **Sesgos**
 
@@ -248,26 +368,176 @@ Los atributos marcados con (opcional) solo aparecen en algunos tipos de evento.
 
 ---
 
-## Arquitectura propuesta
+## Arquitectura
 
-El diseño definitivo y su justificación con el teorema CAP corresponden a la Etapa 2. La propuesta inicial es:
+Toda la infraestructura corre en contenedores con Docker Compose (25 contenedores, ≈ 10 GB de RAM).
 
 ```mermaid
 flowchart LR
-    B[Bluesky · Jetstream<br/>WebSocket] --> C[Consumidores en Python]
-    W[Wikimedia · Recent Changes<br/>SSE] --> C
-    C --> D[(Capa de ingesta<br/>MongoDB con réplicas y sharding)]
-    D --> P[Capa analítica<br/>Apache Spark]
-    P --> A[Picos, similitud y sincronización]
-    A --> V[Indicadores y alertas para revisión humana]
+    subgraph Fuentes
+        B[Bluesky<br/>WebSocket]
+        W[Wikimedia<br/>SSE]
+        M[Mastodon<br/>REST cada 5 s]
+        G[GDELT<br/>lotes de 15 min]
+    end
+    subgraph Captura
+        C[Consumidores<br/>Python]
+        K[[Kafka<br/>3 brokers]]
+        S[Sink<br/>Python]
+    end
+    subgraph Ingesta["Ingesta · verdad operativa"]
+        R{{mongos}}
+        S1[(Shard 1<br/>3 réplicas)]
+        S2[(Shard 2<br/>3 réplicas)]
+        CF[(Config servers<br/>3 réplicas)]
+    end
+    subgraph Analítica
+        SP[Spark<br/>master + 2 workers]
+        CA[(Cassandra<br/>3 nodos)]
+        N[(Neo4j<br/>+ GDS)]
+    end
+    B & W & M & G --> C --> K --> S --> R
+    R --> S1 & S2
+    R -.-> CF
+    R --> SP
+    SP --> CA
+    SP --> N
+    CA --> V[Dashboard<br/>Etapa final]
 ```
 
-| Capa | Tecnología candidata | Rol |
+| Capa | Tecnología | Configuración | Rol |
+| --- | --- | --- | --- |
+| Captura | Python 3.12 | Un contenedor por fuente | Se conecta a cada fuente y reintenta con espera exponencial. Bluesky y Wikimedia retoman con cursor (`time_us`, `Last-Event-ID`). |
+| Buffer | Kafka 3.9 (KRaft) | 3 brokers, 3 particiones por tópico, factor de replicación 3, `min.insync.replicas=2` | Desacopla la captura de la base de datos: si MongoDB está eligiendo primario, los eventos esperan en Kafka. |
+| Ingesta y operativa | MongoDB 7.0 | 2 shards × 3 réplicas, 3 config servers, 1 `mongos` | Guarda cada evento crudo tal como llegó, una colección por fuente en la base `raw`. |
+| Procesamiento (OLAP) | Spark 3.5.7 | Master + 2 workers (4 cores, 4 GB) | Limpieza, deduplicación, enriquecimiento y agregación (Etapa 4). |
+| Resultados | Cassandra 5.0 | 3 nodos, factor de replicación 3 | Series de tiempo de métricas y alertas que consulta el dashboard. |
+| Grafo | Neo4j 5.26 + GDS | 1 nodo | Relaciones entre cuentas, temas y artículos; comunidades y centralidad. |
+
+**Flujo de un evento.** El consumidor envuelve el evento crudo en un documento `{_id, source, received_at, data}` y lo publica en el tópico de su fuente. El `_id` es un identificador estable del evento: `did/rkey/rev` en Bluesky, `meta.id` en Wikimedia, `uri@fecha` en Mastodon y `GLOBALEVENTID` en GDELT. El sink lee los tópicos y escribe en lotes en `raw.<fuente>`. El offset de Kafka se confirma **solo después** de que MongoDB aceptó la escritura con `w: "majority"`, y un `_id` repetido se descarta. Así, si algo falla, el mensaje se vuelve a leer y no se pierde ni se duplica.
+
+**Sharding.** Cada colección usa una shard key **hasheada sobre `_id`**. Los identificadores de las fuentes crecen con el tiempo; con una llave por rango, todas las escrituras recientes caerían en el mismo shard. El hash las reparte de forma pareja: en la prueba quedaron 539 / 461 documentos por shard. A cambio, las consultas por rango de fecha consultan los dos shards, lo cual no es un problema porque esas consultas las hace Spark en lote.
+
+**Por qué Spark 3.5 y no 4.x.** Los conectores oficiales de MongoDB (10.5.0), Cassandra (3.5.1) y Neo4j (5.3.6) están publicados y probados para Spark 3.5.
+
+```
+.
+├── docker-compose.yml      # toda la infraestructura
+├── .env.example            # variables y contraseñas (copiar a .env)
+├── mongo/                  # inicialización del clúster, colecciones y usuarios
+├── cassandra/              # superusuario, keyspace, tablas y roles
+├── spark/                  # configuración de Spark y conectores
+├── ingestion/              # consumidores de las 4 fuentes y sink a MongoDB
+└── processing/             # jobs de Spark
+```
+
+## Justificación CAP
+
+En un sistema distribuido, cuando hay una partición de red hay que elegir entre consistencia y disponibilidad. Elegimos distinto en cada capa según lo que necesita cada una.
+
+| Componente | Prioridad | Por qué |
 | --- | --- | --- |
-| Ingesta y operativa | **MongoDB** (replica set + sharding) | Escritura rápida de documentos JSON heterogéneos; fuente de verdad operativa. |
-| Procesamiento analítico (OLAP) | **Apache Spark** | Limpieza, deduplicación, enriquecimiento y agregaciones masivas. |
-| Captura | **Python** | Consumidores del WebSocket y del SSE con reanudación por cursor (`time_us` / `meta.offset`). |
-| Visualización | Por definir | Prototipo de indicadores y alertas. |
+| **MongoDB** (ingesta) | **CP** | Es la verdad operativa: no puede perder ni duplicar eventos, ni devolver un estado que después se revierta. Escribimos con `w: "majority"` y leemos del primario. Si un shard pierde a su primario, deja de aceptar escrituras durante la elección (≈ 1 s en nuestras pruebas) en lugar de arriesgar datos. |
+| **Kafka** (buffer) | **CP**, compensa la disponibilidad de MongoDB | Con `acks=all` y `min.insync.replicas=2`, un mensaje solo se confirma cuando está en 2 de 3 brokers. Tolera la caída de un broker sin perder datos. Además, absorbe los segundos en que MongoDB no acepta escrituras, así que la captura nunca se detiene. |
+| **Cassandra** (resultados) | **AP** | El dashboard debe responder aunque falle un nodo. Con 3 réplicas, las lecturas con consistencia `ONE` siguen funcionando con dos nodos caídos. Mostrar una métrica con unos segundos de retraso es aceptable; que el dashboard no cargue, no. La consistencia se puede ajustar por consulta (`QUORUM` cuando haga falta). |
+| **Neo4j** (grafo) | No distribuido | La edición Community corre en un solo nodo. Es una capa analítica que se puede reconstruir desde Spark en cualquier momento, así que su caída no pierde información. |
+| **Spark** | No aplica | Es un motor de cómputo, no de almacenamiento. Si cae un worker, el master reasigna sus tareas. |
+
+En resumen, priorizamos consistencia donde se escribe la verdad (MongoDB y Kafka) y disponibilidad donde se lee el resultado (Cassandra). Las tres capas toleran particiones porque cada una replica sus datos en 3 nodos.
+
+## Control de accesos
+
+Todas las contraseñas viven en `.env`, que no se sube al repositorio; `.env.example` documenta qué variables hacen falta. Solo se publican hacia la máquina anfitriona, y únicamente en `127.0.0.1`, el router de MongoDB (27017), la consola de Spark (8080) y Neo4j (7474, 7687). Kafka, los shards, los config servers y Cassandra solo son accesibles dentro de la red interna de Docker.
+
+**MongoDB**
+
+- Autenticación interna entre nodos con **keyfile**; sin keyfile, un nodo no puede unirse al clúster.
+- Autenticación de clientes con usuario y contraseña (SCRAM). Cada shard tiene además su propio administrador local, lo que cierra la *localhost exception*.
+
+| Usuario | Permisos | Lo usa |
+| --- | --- | --- |
+| `admin` | `root` | Administración |
+| `ingestor` | Rol propio `ingesta`: `find`, `insert` y `update` en `raw`. No puede borrar ni eliminar colecciones. | Sink |
+| `spark` | Lectura en `raw`, lectura y escritura en `curated` | Jobs de Spark |
+| `analyst` | Solo lectura en `curated` | Consultas de análisis |
+
+**Cassandra**
+
+- `PasswordAuthenticator` y `CassandraAuthorizer` activados.
+- El usuario por defecto `cassandra` queda **sin login y sin superusuario**; se reemplaza por `admin`.
+- `system_auth` se replica en los 3 nodos para que el login funcione aunque caiga uno.
+
+| Rol | Permisos |
+| --- | --- |
+| `admin` | Superusuario |
+| `spark_writer` | `SELECT` y `MODIFY` en el keyspace `truthwatch` |
+| `web_reader` | Solo `SELECT` en `truthwatch` |
+
+**Spark.** `spark.authenticate=true` con un secreto compartido (`SPARK_SECRET`). El master, los workers y cada job deben conocerlo para comunicarse.
+
+**Neo4j.** Autenticación con contraseña. La edición Community no tiene roles, así que solo existe el usuario `neo4j`.
+
+**Kafka.** Sin autenticación propia; está aislado en la red interna y ningún puerto se expone fuera de Docker.
+
+## Despliegue
+
+Requisitos: Docker con Compose y unos 12 GB de RAM asignados.
+
+```bash
+cp .env.example .env              # y cambiar cada "cambiar" por una contraseña
+./mongo/init.sh                   # levanta todo e inicializa MongoDB
+./cassandra/init.sh               # superusuario, keyspace, tablas y roles
+```
+
+Los dos scripts se pueden volver a correr sin romper nada. Después del primer arranque basta con `docker compose up -d`: los contenedores se reinician solos si fallan (`restart: unless-stopped`).
+
+Para comprobar la conexión de Spark con las tres bases:
+
+```bash
+docker exec tw-spark-master /opt/spark/bin/spark-submit /jobs/check.py
+```
+
+| Servicio | Acceso local |
+| --- | --- |
+| MongoDB | `mongodb://<usuario>:<contraseña>@localhost:27017/?authSource=admin` |
+| Spark UI | <http://localhost:8080> |
+| Neo4j Browser | <http://localhost:7474> |
+
+## Pruebas de la infraestructura
+
+Pruebas hechas el 21 de noviembre de 2026 sobre el despliegue local.
+
+**Permisos**
+
+| Prueba | Resultado |
+| --- | --- |
+| `ingestor` inserta 1,000 documentos en `raw` | Permitido |
+| `ingestor` intenta eliminar una colección | Rechazado (`not authorized`) |
+| `ingestor` intenta leer `curated` | Rechazado |
+| `analyst` intenta escribir en `raw` | Rechazado |
+| Cliente sin credenciales consulta `raw` | Rechazado (`requires authentication`) |
+| `web_reader` intenta truncar una tabla de Cassandra | Rechazado (`Unauthorized`) |
+| Job de Spark con un secreto incorrecto | Rechazado (fallo de autenticación SASL) |
+
+**Distribución y alta disponibilidad**
+
+| Prueba | Resultado |
+| --- | --- |
+| Reparto de 1,000 documentos entre shards | 539 en `s1`, 461 en `s2` |
+| Se detiene el primario del shard `s1` | Nuevo primario en ≈ 1 s; 200 escrituras exitosas con el nodo caído; el nodo regresó y recuperó el primario en 13 s |
+| Se detiene un broker de Kafka durante la captura | En los siguientes 45 s entraron 3,708 eventos a MongoDB sin errores en el sink |
+| Réplicas de un tópico | 3 particiones, réplicas `1,2,3`, todas en sincronía |
+
+**Flujo completo.** `processing/check.py` lee las ediciones de Wikimedia desde MongoDB con el usuario `spark`, calcula las 5 wikis con más actividad en los workers y escribe el resultado en Cassandra (como `spark_writer`) y en Neo4j.
+
+## Limitaciones
+
+- **Una sola máquina física.** Las réplicas protegen contra la caída de procesos o nodos, no contra el apagado del equipo. Las pruebas de fallo se hacen a nivel de contenedor. El despliegue de referencia corre en una laptop que no está encendida 24/7, así que puede haber huecos en la captura.
+- **Mastodon sin borrados.** Ver [Consideraciones éticas](#consideraciones-éticas); se mitiga con un TTL de 30 días.
+- **GDELT llega por lotes** cada 15 minutos, no evento por evento.
+- **Neo4j Community** no tiene alta disponibilidad ni roles.
+- **Kafka sin autenticación**, protegido solo por el aislamiento de red.
+- **Cursores en memoria.** Si un consumidor se reinicia, Bluesky y Wikimedia retoman desde el momento actual; persistir el cursor queda para la Etapa 3.
 
 ## Preguntas de análisis
 

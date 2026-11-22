@@ -20,11 +20,11 @@ x-config: &config
 
 x-shard1: &shard1
   <<: *mongo
-  command: mongod --shardsvr --replSet s1 --wiredTigerCacheSizeGB ${MONGO_CACHE_GB:-0.25}
+  command: mongod --shardsvr --replSet s1 --oplogSize 2048 --wiredTigerCacheSizeGB ${MONGO_CACHE_GB:-0.25}
 
 x-shard2: &shard2
   <<: *mongo
-  command: mongod --shardsvr --replSet s2 --wiredTigerCacheSizeGB ${MONGO_CACHE_GB:-0.25}
+  command: mongod --shardsvr --replSet s2 --oplogSize 2048 --wiredTigerCacheSizeGB ${MONGO_CACHE_GB:-0.25}
 
 # Kafka en modo KRaft: cada nodo es broker y controller a la vez
 x-kafka: &kafka
@@ -48,7 +48,7 @@ x-kafka-env: &kafka-env
   KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
   KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
   KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-  KAFKA_LOG_RETENTION_HOURS: 48
+  KAFKA_LOG_RETENTION_HOURS: 24
 
 # Captura: una imagen, un script por fuente
 x-ingest: &ingest

@@ -6,18 +6,19 @@ for (const s of ['s1', 's2']) {
   sh.addShard(`${s}/mongo-${s}-1:27017,mongo-${s}-2:27017,mongo-${s}-3:27017`)
 }
 
-// Una colección por fuente, repartida entre shards por hash del _id
+// Una colección por fuente, repartida entre shards por hash del _id.
+// Los datos crudos se borran solos a los 7 días: lo que se conserva son los resultados del análisis.
 sh.enableSharding('raw')
+const raw = db.getSiblingDB('raw')
+const ttl = 7 * 24 * 3600
 for (const src of sources) {
   sh.shardCollection(`raw.${src}`, { _id: 'hashed' })
-  db.getSiblingDB('raw')[src].createIndex({ received_at: 1 })
+  if (raw[src].getIndexes().some((i) => i.name === 'received_at_1')) {
+    raw.runCommand({ collMod: src, index: { name: 'received_at_1', expireAfterSeconds: ttl } })
+  } else {
+    raw[src].createIndex({ received_at: 1 }, { expireAfterSeconds: ttl })
+  }
 }
-
-// Mastodon no expone borrados sin cuenta: sus posts crudos se eliminan solos a los 30 días
-db.getSiblingDB('raw').runCommand({
-  collMod: 'mastodon',
-  index: { keyPattern: { received_at: 1 }, expireAfterSeconds: 30 * 24 * 3600 },
-})
 
 // Roles y usuarios
 const admin = db.getSiblingDB('admin')

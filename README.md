@@ -351,7 +351,7 @@ El archivo es un CSV de 61 columnas sin encabezado; el consumidor les asigna nom
 **Derecho al olvido**
 
 - Jetstream emite eventos `delete` cuando un usuario borra una publicación, y eventos `account` cuando una cuenta se desactiva o es suspendida. **Respetaremos esos borrados**: no conservaremos ninguna parte del contenido de publicaciones que su autor eliminó.
-- Mastodon solo avisa de los borrados por streaming con una cuenta en cada instancia, y la consulta pública no los incluye. Como mitigación, los posts crudos de Mastodon **se eliminan automáticamente a los 30 días** (índice TTL en MongoDB), así que nada se conserva de forma indefinida.
+- Mastodon solo avisa de los borrados por streaming con una cuenta en cada instancia, y la consulta pública no los incluye. Como mitigación, los datos crudos de todas las fuentes **se eliminan automáticamente a los 7 días** (índice TTL en MongoDB), así que nada se conserva de forma indefinida.
 - GDELT no contiene datos de personas usuarias: solo actores públicos mencionados en noticias y la URL del medio.
 
 **Sesgos**
@@ -535,10 +535,13 @@ Pruebas hechas el 21 de noviembre de 2026 sobre el despliegue local.
 ## Limitaciones
 
 - **Una sola máquina física.** Las réplicas protegen contra la caída de procesos o nodos, no contra el apagado del equipo. Las pruebas de fallo se hacen a nivel de contenedor. El despliegue de referencia corre en una laptop que no está encendida 24/7, así que puede haber huecos en la captura.
-- **Mastodon sin borrados.** Ver [Consideraciones éticas](#consideraciones-éticas); se mitiga con un TTL de 30 días.
+- **Mastodon sin borrados.** Ver [Consideraciones éticas](#consideraciones-éticas); se mitiga con el TTL de 7 días.
 - **GDELT llega por lotes** cada 15 minutos, no evento por evento.
 - **Neo4j Community** no tiene alta disponibilidad ni roles.
 - **Kafka sin autenticación**, protegido solo por el aislamiento de red.
+- **Sin TLS.** Las conexiones no van cifradas: todo corre en la red interna de Docker o en `127.0.0.1`. Habría que agregarlo antes de exponer cualquier servicio.
+- **Interfaz de Spark sin login.** El puerto 8080 solo se abre en `127.0.0.1`.
+- **Espacio en disco.** Con el TTL de 7 días, el oplog limitado a 2 GB por nodo y Kafka con 24 h de retención, el proyecto se estabiliza en unos 120 GB.
 - **Cursores en memoria.** Si un consumidor se reinicia, Bluesky y Wikimedia retoman desde el momento actual; persistir el cursor queda para la Etapa 3.
 
 ## Preguntas de análisis

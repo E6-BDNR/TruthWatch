@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 from functools import cache
 
-from confluent_kafka import Producer
+from confluent_kafka import Consumer, Producer, TopicPartition
 
 KAFKA = "kafka-1:9092,kafka-2:9092,kafka-3:9092"
 
@@ -40,6 +40,23 @@ def publish(source, event_id, data):
     if elapsed >= 60:
         logging.getLogger(source).info("%.1f eventos/s", stats["count"] / elapsed)
         stats.update(count=0, since=time.time())
+
+
+def last_events(topic, n=1):
+    """Los últimos n eventos de cada partición del tópico. Kafka funciona como cursor:
+    al reiniciar, cada consumidor retoma desde lo último que alcanzó a publicar."""
+    c = Consumer({"bootstrap.servers": KAFKA, "group.id": "cursores", "enable.auto.commit": False})
+    parts, pending = [], 0
+    for p in c.list_topics(topic, timeout=10).topics[topic].partitions:
+        lo, hi = c.get_watermark_offsets(TopicPartition(topic, p), timeout=10)
+        parts.append(TopicPartition(topic, p, max(lo, hi - n)))
+        pending += hi - max(lo, hi - n)
+    c.assign(parts)
+    events = []
+    while len(events) < pending and (msgs := c.consume(pending - len(events), timeout=10)):
+        events += [json.loads(m.value())["data"] for m in msgs if not m.error()]
+    c.close()
+    return events
 
 
 def forever(source, run):

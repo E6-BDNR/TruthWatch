@@ -13,7 +13,7 @@ from pymongo.errors import BulkWriteError
 
 from common import KAFKA
 
-SOURCES = ["bluesky", "wikimedia", "mastodon", "gdelt"]
+SOURCES = ["bluesky", "wikimedia", "mastodon", "gdelt", "carga"]  # carga: tests/carga.sh
 DUPLICATE = 11000
 
 log = logging.getLogger("sink")
@@ -23,6 +23,7 @@ consumer = Consumer({
     "group.id": "mongo-sink",
     "enable.auto.commit": False,  # el offset se confirma solo después de escribir en MongoDB
     "auto.offset.reset": "earliest",
+    "topic.metadata.refresh.interval.ms": 10000,  # detecta pronto el tópico de carga
 })
 consumer.subscribe(SOURCES)
 
@@ -46,8 +47,9 @@ while True:
         try:
             raw[source].insert_many(docs, ordered=False)
         except BulkWriteError as e:
-            # Un _id repetido es un evento que ya teníamos: se ignora
-            if any(err["code"] != DUPLICATE for err in e.details["writeErrors"]):
+            # Un _id repetido es un evento que ya teníamos: se ignora. Cualquier otro error,
+            # o una escritura sin confirmar por la mayoría, reinicia el sink sin avanzar el offset.
+            if e.details["writeConcernErrors"] or any(err["code"] != DUPLICATE for err in e.details["writeErrors"]):
                 raise
 
     consumer.commit(asynchronous=False)

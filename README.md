@@ -447,7 +447,9 @@ En resumen, priorizamos consistencia donde se escribe la verdad (MongoDB y Kafka
 
 ## Control de accesos
 
-Todas las contraseñas viven en `.env`, que no se sube al repositorio; `.env.example` documenta qué variables hacen falta. Solo se publican hacia la máquina anfitriona, y únicamente en `127.0.0.1`, el router de MongoDB (27017), la consola de Spark (8080) y Neo4j (7474, 7687). Kafka, los shards, los config servers y Cassandra solo son accesibles dentro de la red interna de Docker.
+Todas las contraseñas viven en `.env`, que no se sube al repositorio; `.env.example` documenta qué variables hacen falta. Cada contenedor recibe **solo las contraseñas que usa**: los consumidores no ven ninguna, el sink solo la de `ingestor` y Spark solo las de sus usuarios. Si falta una variable, Docker Compose se niega a arrancar en lugar de usar un valor vacío. Los consumidores corren con un usuario sin privilegios (`nobody`).
+
+Solo se publican hacia la máquina anfitriona, y únicamente en `127.0.0.1`, el router de MongoDB (27017), la consola de Spark (8080) y Neo4j (7474, 7687). Kafka, los shards, los config servers y Cassandra solo son accesibles dentro de la red interna de Docker.
 
 **MongoDB**
 

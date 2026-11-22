@@ -2,6 +2,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from functools import cache
 
 from confluent_kafka import Producer
 
@@ -9,12 +10,16 @@ KAFKA = "kafka-1:9092,kafka-2:9092,kafka-3:9092"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s | %(message)s", datefmt="%H:%M:%S")
 
-producer = Producer({
-    "bootstrap.servers": KAFKA,
-    "enable.idempotence": True,  # acks=all y sin duplicados por reintentos
-    "compression.type": "lz4",
-    "linger.ms": 50,
-})
+
+@cache
+def producer():
+    return Producer({
+        "bootstrap.servers": KAFKA,
+        "enable.idempotence": True,  # acks=all y sin duplicados por reintentos
+        "compression.type": "lz4",
+        "linger.ms": 50,
+    })
+
 
 stats = {"count": 0, "since": time.time()}
 
@@ -27,8 +32,8 @@ def publish(source, event_id, data):
         "received_at": datetime.now(timezone.utc).isoformat(),
         "data": data,
     }
-    producer.produce(source, key=event_id, value=json.dumps(msg))
-    producer.poll(0)
+    producer().produce(source, key=event_id, value=json.dumps(msg))
+    producer().poll(0)
 
     stats["count"] += 1
     elapsed = time.time() - stats["since"]
@@ -49,5 +54,5 @@ def forever(source, run):
         except Exception as e:
             log.warning("conexión perdida: %s", e)
         wait = 1 if time.time() - start > 60 else min(wait * 2, 60)
-        producer.flush(10)
+        producer().flush(10)
         time.sleep(wait)

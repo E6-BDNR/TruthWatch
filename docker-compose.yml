@@ -55,16 +55,19 @@ x-ingest: &ingest
   build: ./ingestion
   restart: unless-stopped
   mem_limit: 256m
-  env_file: .env
   depends_on: [kafka-1, kafka-2, kafka-3]
 
 # Spark standalone: el driver corre en el master con spark-submit
 x-spark: &spark
   image: apache/spark:3.5.7-scala2.12-java17-python3-ubuntu
   restart: unless-stopped
-  env_file: .env
+  # Cada contenedor recibe solo las contraseñas que usa
   environment:
     SPARK_CONF_DIR: /tmp/conf
+    SPARK_SECRET: ${SPARK_SECRET:?falta en .env}
+    MONGO_SPARK_PASSWORD: ${MONGO_SPARK_PASSWORD:?falta en .env}
+    CASSANDRA_SPARK_PASSWORD: ${CASSANDRA_SPARK_PASSWORD:?falta en .env}
+    NEO4J_PASSWORD: ${NEO4J_PASSWORD:?falta en .env}
   volumes: [./spark/spark-defaults.conf:/spark-defaults.conf:ro, ./processing:/jobs:ro]
   # El secreto compartido viene del .env y se agrega a la configuración al arrancar
   entrypoint:
@@ -140,7 +143,7 @@ services:
     restart: unless-stopped
     mem_limit: 2g
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?falta en .env}
       NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
       NEO4J_dbms_security_procedures_unrestricted: apoc.*,gds.*
       NEO4J_server_memory_heap_max__size: 1g
@@ -186,6 +189,8 @@ services:
     <<: *ingest
     container_name: tw-sink
     command: python sink.py
+    environment:
+      MONGO_INGESTOR_PASSWORD: ${MONGO_INGESTOR_PASSWORD:?falta en .env}
     depends_on: [kafka-1, kafka-2, kafka-3, mongo-router]
 
   # Config servers

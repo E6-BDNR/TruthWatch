@@ -5,6 +5,7 @@ import os
 import time
 from collections import defaultdict
 from datetime import datetime
+from urllib.parse import quote_plus
 
 from confluent_kafka import Consumer
 from pymongo import MongoClient
@@ -25,7 +26,8 @@ consumer = Consumer({
 })
 consumer.subscribe(SOURCES)
 
-mongo = MongoClient(f"mongodb://ingestor:{os.environ['MONGO_INGESTOR_PASSWORD']}@mongo-router:27017/?authSource=admin", w="majority")
+password = quote_plus(os.environ["MONGO_INGESTOR_PASSWORD"])
+mongo = MongoClient(f"mongodb://ingestor:{password}@mongo-router:27017/?authSource=admin", w="majority")
 raw = mongo.raw
 saved, since = 0, time.time()
 

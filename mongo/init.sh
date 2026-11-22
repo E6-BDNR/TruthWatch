@@ -9,7 +9,10 @@ docker compose up -d
 
 mongo() { docker exec -i "${@:3}" "tw-mongo-$1" mongosh --quiet --eval "$2"; }
 
-wait_for() { until mongo "$1" "$2" 2>/dev/null | grep -q true; do sleep 2; done; }
+wait_for() {
+  for _ in {1..90}; do mongo "$1" "$2" 2>/dev/null | grep -q true && return; sleep 2; done
+  echo "tw-mongo-$1 no respondió en 3 minutos" >&2; exit 1
+}
 
 # rs_init <set> <configsvr> <nodos...>
 rs_init() {

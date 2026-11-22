@@ -6,7 +6,7 @@ set -a; source .env; set +a
 
 docker compose up -d --wait cassandra-1 cassandra-2 cassandra-3
 
-cql() { docker exec -i tw-cassandra-1 cqlsh -u "$1" -p "$2" "${@:3}" 2>&1 | grep -v -E "^(Warning|Recommendation)"; }
+cql() { docker exec -i tw-cassandra-1 cqlsh -u "$1" -p "$2" "${@:3}" 2>&1 | { grep -v -E "^(Warning|Recommendation)" || true; }; }
 
 # La primera vez entramos con el usuario por defecto, creamos admin y desactivamos el original
 if ! docker exec tw-cassandra-1 cqlsh -u admin -p "$CASSANDRA_SUPERUSER_PASSWORD" -e "SELECT now() FROM system.local" &>/dev/null; then

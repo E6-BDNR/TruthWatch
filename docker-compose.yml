@@ -1,0 +1,90 @@
+name: truthwatch
+
+# Todos los mongod comparten imagen, keyfile y healthcheck.
+x-mongo: &mongo
+  image: mongo:7.0
+  restart: unless-stopped
+  mem_limit: 768m
+  entrypoint:
+    - bash
+    - -c
+    - install -m 400 -o 999 -g 999 /keyfile /etc/keyfile && exec docker-entrypoint.sh "$$@" --keyFile /etc/keyfile --bind_ip_all --port 27017
+    - --
+  healthcheck:
+    test: mongosh --quiet --eval "db.adminCommand('ping')"
+    interval: 10s
+
+x-config: &config
+  <<: *mongo
+  command: mongod --configsvr --replSet cfg --wiredTigerCacheSizeGB ${MONGO_CACHE_GB:-0.25}
+
+x-shard1: &shard1
+  <<: *mongo
+  command: mongod --shardsvr --replSet s1 --wiredTigerCacheSizeGB ${MONGO_CACHE_GB:-0.25}
+
+x-shard2: &shard2
+  <<: *mongo
+  command: mongod --shardsvr --replSet s2 --wiredTigerCacheSizeGB ${MONGO_CACHE_GB:-0.25}
+
+services:
+  # Config servers
+  mongo-cfg-1:
+    <<: *config
+    container_name: tw-mongo-cfg-1
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-cfg-1:/data/configdb]
+  mongo-cfg-2:
+    <<: *config
+    container_name: tw-mongo-cfg-2
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-cfg-2:/data/configdb]
+  mongo-cfg-3:
+    <<: *config
+    container_name: tw-mongo-cfg-3
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-cfg-3:/data/configdb]
+
+  # Shard 1
+  mongo-s1-1:
+    <<: *shard1
+    container_name: tw-mongo-s1-1
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s1-1:/data/db]
+  mongo-s1-2:
+    <<: *shard1
+    container_name: tw-mongo-s1-2
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s1-2:/data/db]
+  mongo-s1-3:
+    <<: *shard1
+    container_name: tw-mongo-s1-3
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s1-3:/data/db]
+
+  # Shard 2
+  mongo-s2-1:
+    <<: *shard2
+    container_name: tw-mongo-s2-1
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s2-1:/data/db]
+  mongo-s2-2:
+    <<: *shard2
+    container_name: tw-mongo-s2-2
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s2-2:/data/db]
+  mongo-s2-3:
+    <<: *shard2
+    container_name: tw-mongo-s2-3
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s2-3:/data/db]
+
+  # Router: único punto de entrada para clientes
+  mongo-router:
+    <<: *mongo
+    container_name: tw-mongo-router
+    mem_limit: 256m
+    command: mongos --configdb cfg/mongo-cfg-1:27017,mongo-cfg-2:27017,mongo-cfg-3:27017
+    ports: ["127.0.0.1:27017:27017"]
+    volumes: [./mongo/keyfile:/keyfile:ro]
+
+volumes:
+  mongo-cfg-1:
+  mongo-cfg-2:
+  mongo-cfg-3:
+  mongo-s1-1:
+  mongo-s1-2:
+  mongo-s1-3:
+  mongo-s2-1:
+  mongo-s2-2:
+  mongo-s2-3:

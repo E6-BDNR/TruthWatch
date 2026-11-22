@@ -1,0 +1,27 @@
+# Secretos: nunca se suben
+.env
+*.env
+!.env.example
+mongo/keyfile
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Datos locales y salidas
+data/raw/
+data/local/
+*.parquet
+spark-warehouse/
+checkpoints/
+logs/
+
+# Sistema / editores
+.DS_Store
+Icon?
+.idea/
+.vscode/

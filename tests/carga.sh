@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prueba de carga: manda N eventos por Kafka y comprueba que todos llegan a MongoDB.
-# Con un segundo argumento tumba un componente a media prueba: mongo, kafka o sink.
+# Con un segundo argumento provoca una falla a media prueba: mongo, router, kafka, sink o shard.
 #   ./tests/carga.sh 100000 mongo
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -8,7 +8,7 @@ set -a; source .env; set +a
 n=${1:-100000} falla=${2:-} run=$(date +%s)
 
 mongo() { docker exec tw-mongo-router mongosh --quiet -u "$MONGO_ROOT_USER" -p "$MONGO_ROOT_PASSWORD" --authenticationDatabase admin --eval "$1"; }
-count() { mongo "db.getSiblingDB('raw').carga.countDocuments({_id: /^carga-$run-/})"; }
+count() { mongo "db.getSiblingDB('raw').carga.countDocuments({_id: /^carga-$run-/})" 2>/dev/null || echo 0; }
 
 docker exec tw-kafka-1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --create --if-not-exists --topic carga >/dev/null
 docker compose run --rm --no-deps -T -v ./tests:/tests -e PYTHONPATH=/app wikimedia python /tests/carga.py "$n" "$run" &
@@ -34,8 +34,13 @@ crash() {
 
 case $falla in
   mongo) crash tw-mongo-s1-1 ;;
+  router) crash tw-mongo-router ;;
   kafka) crash tw-kafka-2 ;;
   sink) crash tw-sink ;;
+  shard)  # s1 sin mayoría: no puede elegir primario y deja de aceptar escrituras
+    sleep 5; docker stop tw-mongo-s1-1 tw-mongo-s1-2 >/dev/null
+    echo "s1 sin mayoría durante 60 s"; sleep 60
+    docker start tw-mongo-s1-1 tw-mongo-s1-2 >/dev/null ;;
 esac
 
 wait %1

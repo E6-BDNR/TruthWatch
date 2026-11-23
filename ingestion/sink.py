@@ -2,13 +2,14 @@
 import json
 import logging
 import os
+import re
 import time
 from collections import defaultdict
 from datetime import datetime
 from urllib.parse import quote_plus
 
 from confluent_kafka import Consumer
-from pymongo import MongoClient
+from pymongo import MongoClient, UpdateMany
 from pymongo.errors import BulkWriteError
 
 from common import KAFKA
@@ -32,6 +33,23 @@ mongo = MongoClient(f"mongodb://ingestor:{password}@mongo-router:27017/?authSour
 raw = mongo.raw
 saved, since = 0, time.time()
 
+
+def forget(docs):
+    """Quita el texto de los posts que su autor borró y de las cuentas eliminadas o dadas de baja.
+    Se conservan los metadatos (quién, cuándo) pero no el contenido."""
+    no_content = {"$unset": {"data.commit.record": ""}}
+    ops = []
+    for d in docs:
+        e, c = d["data"], d["data"].get("commit")
+        if c and c["operation"] == "delete":
+            post = re.escape(f"{e['did']}/{c['rkey']}/")
+            ops.append(UpdateMany({"_id": {"$regex": f"^{post}"}, "data.commit.record": {"$exists": True}}, no_content))
+        elif e["kind"] == "account" and e["account"].get("status") in ("deleted", "takendown"):
+            ops.append(UpdateMany({"data.did": e["did"], "data.commit.record": {"$exists": True}}, no_content))
+    if ops:
+        raw.bluesky.bulk_write(ops, ordered=False)
+
+
 while True:
     msgs = [m for m in consumer.consume(1000, timeout=1) if not m.error()]
     if not msgs:
@@ -51,6 +69,8 @@ while True:
             # o una escritura sin confirmar por la mayoría, reinicia el sink sin avanzar el offset.
             if e.details["writeConcernErrors"] or any(err["code"] != DUPLICATE for err in e.details["writeErrors"]):
                 raise
+        if source == "bluesky":
+            forget(docs)
 
     consumer.commit(asynchronous=False)
     saved += len(msgs)

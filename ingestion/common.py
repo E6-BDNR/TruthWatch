@@ -24,15 +24,16 @@ def producer():
 stats = {"count": 0, "since": time.time()}
 
 
-def publish(source, event_id, data):
-    """Envuelve el evento crudo y lo manda al tópico de su fuente."""
+def publish(source, event_id, data, key=None):
+    """Envuelve el evento crudo y lo manda al tópico de su fuente. Los eventos con la
+    misma llave caen en la misma partición y se leen en orden (por omisión, el _id)."""
     msg = {
         "_id": event_id,
         "source": source,
         "received_at": datetime.now(timezone.utc).isoformat(),
         "data": data,
     }
-    producer().produce(source, key=event_id, value=json.dumps(msg))
+    producer().produce(source, key=key or event_id, value=json.dumps(msg))
     producer().poll(0)
 
     stats["count"] += 1

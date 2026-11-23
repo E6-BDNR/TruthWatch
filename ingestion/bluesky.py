@@ -14,8 +14,10 @@ def run():
         for raw in ws:
             e = json.loads(raw)
             c = e.get("commit")
-            key = f"{e['did']}/{c['rkey']}/{c['rev']}" if c else f"{e['did']}/{e['kind']}/{e['time_us']}"
-            publish("bluesky", key, e)
+            if c:  # las versiones de un post comparten partición, así el borrado llega después de la creación
+                publish("bluesky", f"{e['did']}/{c['rkey']}/{c['rev']}", e, key=f"{e['did']}/{c['rkey']}")
+            else:
+                publish("bluesky", f"{e['did']}/{e['kind']}/{e['time_us']}", e)
 
 
 forever("bluesky", run)

@@ -1,0 +1,263 @@
+name: truthwatch
+
+# Todos los mongod comparten imagen, keyfile y healthcheck.
+x-mongo: &mongo
+  image: mongo:7.0
+  restart: unless-stopped
+  mem_limit: 768m
+  entrypoint:
+    - bash
+    - -c
+    - install -m 400 -o 999 -g 999 /keyfile /etc/keyfile && exec docker-entrypoint.sh "$$@" --keyFile /etc/keyfile --bind_ip_all --port 27017
+    - --
+  healthcheck:
+    test: mongosh --quiet --eval "db.adminCommand('ping')"
+    interval: 10s
+
+x-config: &config
+  <<: *mongo
+  command: mongod --configsvr --replSet cfg --wiredTigerCacheSizeGB ${MONGO_CACHE_GB:-0.25}
+
+x-shard1: &shard1
+  <<: *mongo
+  command: mongod --shardsvr --replSet s1 --oplogSize 2048 --wiredTigerCacheSizeGB ${MONGO_CACHE_GB:-0.25}
+
+x-shard2: &shard2
+  <<: *mongo
+  command: mongod --shardsvr --replSet s2 --oplogSize 2048 --wiredTigerCacheSizeGB ${MONGO_CACHE_GB:-0.25}
+
+# Kafka en modo KRaft: cada nodo es broker y controller a la vez
+x-kafka: &kafka
+  image: apache/kafka:3.9.1
+  restart: unless-stopped
+  mem_limit: 1g
+
+x-kafka-env: &kafka-env
+  CLUSTER_ID: 6Ep9sIrpSVe4paJBKmjHPQ
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+  KAFKA_LOG_DIRS: /var/lib/kafka/data
+  KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+  # Cada mensaje vive en 3 brokers y se confirma cuando lo tienen al menos 2
+  KAFKA_NUM_PARTITIONS: 3
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  KAFKA_LOG_RETENTION_HOURS: 24
+
+# Captura: una imagen, un script por fuente
+x-ingest: &ingest
+  build: ./ingestion
+  restart: unless-stopped
+  mem_limit: 256m
+  depends_on: [kafka-1, kafka-2, kafka-3]
+
+# Spark standalone: el driver corre en el master con spark-submit
+x-spark: &spark
+  image: apache/spark:3.5.7-scala2.12-java17-python3-ubuntu
+  restart: unless-stopped
+  # Cada contenedor recibe solo las contraseñas que usa
+  environment:
+    SPARK_CONF_DIR: /tmp/conf
+    SPARK_SECRET: ${SPARK_SECRET:?falta en .env}
+    MONGO_SPARK_PASSWORD: ${MONGO_SPARK_PASSWORD:?falta en .env}
+    CASSANDRA_SPARK_PASSWORD: ${CASSANDRA_SPARK_PASSWORD:?falta en .env}
+    NEO4J_PASSWORD: ${NEO4J_PASSWORD:?falta en .env}
+  volumes: [./spark/spark-defaults.conf:/spark-defaults.conf:ro, ./processing:/jobs:ro]
+  # El secreto compartido viene del .env y se agrega a la configuración al arrancar
+  entrypoint:
+    - bash
+    - -c
+    - mkdir -p /tmp/conf && cp /spark-defaults.conf /tmp/conf && echo "spark.authenticate.secret $$SPARK_SECRET" >> /tmp/conf/spark-defaults.conf && exec "$$@"
+    - --
+
+x-spark-worker: &spark-worker
+  <<: *spark
+  mem_limit: 2560m
+  command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --cores 2 --memory 2g
+  depends_on: [spark-master]
+
+# Cassandra con usuario y contraseña obligatorios
+x-cassandra: &cassandra
+  image: cassandra:5.0
+  restart: unless-stopped
+  mem_limit: 1536m
+  environment:
+    CASSANDRA_CLUSTER_NAME: truthwatch
+    CASSANDRA_SEEDS: cassandra-1
+    CASSANDRA_DC: dc1
+    CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+    MAX_HEAP_SIZE: ${CASSANDRA_HEAP:-512M}
+    HEAP_NEWSIZE: 128M
+  command:
+    - bash
+    - -c
+    - >-
+      sed -i -e 's/^authenticator:.*/authenticator: PasswordAuthenticator/'
+      -e 's/^authorizer:.*/authorizer: CassandraAuthorizer/' /etc/cassandra/cassandra.yaml
+      && exec docker-entrypoint.sh cassandra -f
+  healthcheck:
+    test: nodetool info | grep -q "Native Transport active.*true"
+    interval: 15s
+    start_period: 60s
+    retries: 20
+
+services:
+  spark-master:
+    <<: *spark
+    container_name: tw-spark-master
+    mem_limit: 1536m
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    ports: ["127.0.0.1:8080:8080"]
+  spark-worker-1:
+    <<: *spark-worker
+    container_name: tw-spark-worker-1
+  spark-worker-2:
+    <<: *spark-worker
+    container_name: tw-spark-worker-2
+
+  # Se levantan uno tras otro: Cassandra no admite que varios nodos se unan a la vez
+  cassandra-1:
+    <<: *cassandra
+    container_name: tw-cassandra-1
+    volumes: [cassandra-1:/var/lib/cassandra]
+  cassandra-2:
+    <<: *cassandra
+    container_name: tw-cassandra-2
+    volumes: [cassandra-2:/var/lib/cassandra]
+    depends_on: { cassandra-1: { condition: service_healthy } }
+  cassandra-3:
+    <<: *cassandra
+    container_name: tw-cassandra-3
+    volumes: [cassandra-3:/var/lib/cassandra]
+    depends_on: { cassandra-2: { condition: service_healthy } }
+
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: tw-neo4j
+    restart: unless-stopped
+    mem_limit: 2g
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?falta en .env}
+      NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*,gds.*
+      NEO4J_server_memory_heap_max__size: 1g
+      NEO4J_server_memory_pagecache_size: 512m
+    ports: ["127.0.0.1:7474:7474", "127.0.0.1:7687:7687"]
+    volumes: [neo4j:/data]
+
+  kafka-1:
+    <<: *kafka
+    container_name: tw-kafka-1
+    environment: { <<: *kafka-env, KAFKA_NODE_ID: 1, KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092 }
+    volumes: [kafka-1:/var/lib/kafka/data]
+  kafka-2:
+    <<: *kafka
+    container_name: tw-kafka-2
+    environment: { <<: *kafka-env, KAFKA_NODE_ID: 2, KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092 }
+    volumes: [kafka-2:/var/lib/kafka/data]
+  kafka-3:
+    <<: *kafka
+    container_name: tw-kafka-3
+    environment: { <<: *kafka-env, KAFKA_NODE_ID: 3, KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092 }
+    volumes: [kafka-3:/var/lib/kafka/data]
+
+  bluesky:
+    <<: *ingest
+    container_name: tw-bluesky
+    command: python bluesky.py
+  wikimedia:
+    <<: *ingest
+    container_name: tw-wikimedia
+    command: python wikimedia.py
+  mastodon:
+    <<: *ingest
+    container_name: tw-mastodon
+    command: python mastodon.py
+  gdelt:
+    <<: *ingest
+    container_name: tw-gdelt
+    command: python gdelt.py
+
+  # Kafka -> MongoDB
+  sink:
+    <<: *ingest
+    container_name: tw-sink
+    command: python sink.py
+    environment:
+      MONGO_INGESTOR_PASSWORD: ${MONGO_INGESTOR_PASSWORD:?falta en .env}
+    depends_on: [kafka-1, kafka-2, kafka-3, mongo-router]
+
+  # Config servers
+  mongo-cfg-1:
+    <<: *config
+    container_name: tw-mongo-cfg-1
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-cfg-1:/data/configdb]
+  mongo-cfg-2:
+    <<: *config
+    container_name: tw-mongo-cfg-2
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-cfg-2:/data/configdb]
+  mongo-cfg-3:
+    <<: *config
+    container_name: tw-mongo-cfg-3
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-cfg-3:/data/configdb]
+
+  # Shard 1
+  mongo-s1-1:
+    <<: *shard1
+    container_name: tw-mongo-s1-1
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s1-1:/data/db]
+  mongo-s1-2:
+    <<: *shard1
+    container_name: tw-mongo-s1-2
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s1-2:/data/db]
+  mongo-s1-3:
+    <<: *shard1
+    container_name: tw-mongo-s1-3
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s1-3:/data/db]
+
+  # Shard 2
+  mongo-s2-1:
+    <<: *shard2
+    container_name: tw-mongo-s2-1
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s2-1:/data/db]
+  mongo-s2-2:
+    <<: *shard2
+    container_name: tw-mongo-s2-2
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s2-2:/data/db]
+  mongo-s2-3:
+    <<: *shard2
+    container_name: tw-mongo-s2-3
+    volumes: [./mongo/keyfile:/keyfile:ro, mongo-s2-3:/data/db]
+
+  # Router: único punto de entrada para clientes
+  mongo-router:
+    <<: *mongo
+    container_name: tw-mongo-router
+    mem_limit: 256m
+    command: mongos --configdb cfg/mongo-cfg-1:27017,mongo-cfg-2:27017,mongo-cfg-3:27017
+    ports: ["127.0.0.1:27017:27017"]
+    volumes: [./mongo/keyfile:/keyfile:ro]
+
+volumes:
+  cassandra-1:
+  cassandra-2:
+  cassandra-3:
+  neo4j:
+  kafka-1:
+  kafka-2:
+  kafka-3:
+  mongo-cfg-1:
+  mongo-cfg-2:
+  mongo-cfg-3:
+  mongo-s1-1:
+  mongo-s1-2:
+  mongo-s1-3:
+  mongo-s2-1:
+  mongo-s2-2:
+  mongo-s2-3:

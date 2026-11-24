@@ -22,8 +22,9 @@ TruthWatch conecta la conversación pública en **Bluesky** y **Mastodon** con l
 12. [Control de accesos](#control-de-accesos)
 13. [Despliegue](#despliegue)
 14. [Pruebas de la infraestructura](#pruebas-de-la-infraestructura)
-15. [Limitaciones](#limitaciones)
-16. [Preguntas de análisis](#preguntas-de-análisis)
+15. [Capa de ingesta](#capa-de-ingesta)
+16. [Limitaciones](#limitaciones)
+17. [Preguntas de análisis](#preguntas-de-análisis)
 
 ## Estado del proyecto
 
@@ -31,7 +32,7 @@ TruthWatch conecta la conversación pública en **Bluesky** y **Mastodon** con l
 | --- | --- | --- |
 | 1 | Selección del stream de datos | **Entregada** |
 | 2 | Infraestructura y configuración | **Entregada** |
-| 3 | Implementación de la capa de ingesta | En curso (consumidores funcionando) |
+| 3 | Implementación de la capa de ingesta | **Implementada** |
 | 4 | Capa de procesamiento para analíticos | Pendiente |
 | 5 | Análisis de resultados | Pendiente |
 
@@ -350,7 +351,7 @@ El archivo es un CSV de 61 columnas sin encabezado; el consumidor les asigna nom
 
 **Derecho al olvido**
 
-- Jetstream emite eventos `delete` cuando un usuario borra una publicación, y eventos `account` cuando una cuenta se desactiva o es suspendida. **Respetaremos esos borrados**: no conservaremos ninguna parte del contenido de publicaciones que su autor eliminó.
+- Jetstream emite eventos `delete` cuando un usuario borra una publicación, y eventos `account` cuando una cuenta se desactiva o es suspendida. **Respetamos esos borrados**: en cuanto llega el borrado, la capa de ingesta quita el texto de todas las versiones guardadas del post, y de todos los posts de una cuenta eliminada. Ver [Capa de ingesta](#capa-de-ingesta).
 - Mastodon solo avisa de los borrados por streaming con una cuenta en cada instancia, y la consulta pública no los incluye. Como mitigación, los datos crudos de todas las fuentes **se eliminan automáticamente a los 7 días** (índice TTL en MongoDB), así que nada se conserva de forma indefinida.
 - GDELT no contiene datos de personas usuarias: solo actores públicos mencionados en noticias y la URL del medio.
 
@@ -407,7 +408,7 @@ flowchart LR
 
 | Capa | Tecnología | Configuración | Rol |
 | --- | --- | --- | --- |
-| Captura | Python 3.12 | Un contenedor por fuente | Se conecta a cada fuente y reintenta con espera exponencial. Bluesky y Wikimedia retoman con cursor (`time_us`, `Last-Event-ID`). |
+| Captura | Python 3.12 | Un contenedor por fuente | Se conecta a cada fuente y reintenta con espera exponencial. Al reiniciar, retoma desde el último evento que publicó en Kafka. |
 | Buffer | Kafka 3.9 (KRaft) | 3 brokers, 3 particiones por tópico, factor de replicación 3, `min.insync.replicas=2` | Desacopla la captura de la base de datos: si MongoDB está eligiendo primario, los eventos esperan en Kafka. |
 | Ingesta y operativa | MongoDB 7.0 | 2 shards × 3 réplicas, 3 config servers, 1 `mongos` | Guarda cada evento crudo tal como llegó, una colección por fuente en la base `raw`. |
 | Procesamiento (OLAP) | Spark 3.5.7 | Master + 2 workers (4 cores, 4 GB) | Limpieza, deduplicación, enriquecimiento y agregación (Etapa 4). |
@@ -428,7 +429,8 @@ flowchart LR
 ├── cassandra/              # superusuario, keyspace, tablas y roles
 ├── spark/                  # configuración de Spark y conectores
 ├── ingestion/              # consumidores de las 4 fuentes y sink a MongoDB
-└── processing/             # jobs de Spark
+├── processing/             # jobs de Spark
+└── tests/                  # pruebas de carga, fallos y consultas puntuales
 ```
 
 ## Justificación CAP
@@ -532,9 +534,117 @@ Pruebas hechas el 21 de noviembre de 2026 sobre el despliegue local.
 
 **Flujo completo.** `processing/check.py` lee las ediciones de Wikimedia desde MongoDB con el usuario `spark`, calcula las 5 wikis con más actividad en los workers y escribe el resultado en Cassandra (como `spark_writer`) y en Neo4j.
 
+## Capa de ingesta
+
+Pruebas hechas el 22 y 23 de noviembre de 2026 sobre el despliegue local, con la captura real corriendo al mismo tiempo.
+
+### Garantía de entrega
+
+Un evento se da por guardado solo cuando lo confirmó la mayoría de las réplicas de su shard. Hasta entonces sigue en Kafka, replicado en 3 brokers.
+
+```mermaid
+sequenceDiagram
+    participant C as Consumidor
+    participant K as Kafka
+    participant S as Sink
+    participant M as MongoDB
+    C->>K: publica (acks=all, productor idempotente)
+    S->>K: lee un lote
+    S->>M: insert_many(w="majority", ordered=False)
+    M-->>S: confirmado por 2 de 3 réplicas
+    S->>M: quita el texto de los posts borrados (Bluesky)
+    S->>K: confirma el offset
+    Note over S,K: Si algo falla antes de confirmar, el sink se reinicia<br/>y vuelve a leer el lote; los _id repetidos se descartan.
+```
+
+Es entrega *al menos una vez* con escrituras idempotentes. Un evento puede llegar dos veces, pero el `_id` estable hace que se guarde una sola vez. Si MongoDB rechaza una escritura por cualquier otra razón, o no alcanza la mayoría, el sink se detiene sin avanzar el offset y Docker lo reinicia.
+
+**Orden.** Kafka solo garantiza el orden dentro de una partición. En Bluesky, todas las versiones de un post (creación, ediciones y borrado) usan la misma llave de partición, `did/rkey`, así que el sink siempre ve el borrado después de la creación.
+
+**Borrados.** Cuando llega el borrado de un post de Bluesky, el sink quita el texto (`commit.record`) de todas sus versiones anteriores. Hace lo mismo con todos los posts de una cuenta eliminada (`deleted`) o dada de baja por la plataforma (`takendown`). Se conservan los metadatos (quién y cuándo), pero no el contenido. El usuario `ingestor` lo hace con `update`, sin permiso para borrar documentos. En una revisión de 3,000 posts borrados, ninguna versión anterior al borrado conservaba su texto.
+
+### Cursores: recuperación tras un reinicio
+
+Al arrancar o reconectarse, cada consumidor lee en Kafka el último evento que publicó y le pide a la fuente que siga desde ahí. Kafka funciona como cursor, así que no hay que guardar estado en otro lado.
+
+| Fuente | Cómo retoma |
+| --- | --- |
+| Bluesky | `cursor=time_us` del último evento; Jetstream reenvía lo que falte. |
+| Wikimedia | `since=meta.dt` del último evento. |
+| Mastodon | `min_id` del último post de cada instancia; la API pagina hacia adelante. |
+| GDELT | Los archivos se llaman con su fecha (`YYYYMMDDHHMMSS`, cada 15 min), así que descarga todos los que falten desde el último `DATEADDED`. |
+
+`tests/cursor.sh` apaga los consumidores de Bluesky y Wikimedia 2 minutos y cuenta los eventos por minuto **según la hora del evento**. Los minutos en que estuvieron apagados quedan igual de llenos que los demás:
+
+```
+minuto (UTC)  bluesky  wikimedia
+02:35            2340       1797
+02:36            2354       2151
+02:37            2195       1680
+02:38            2098       1882  <- apagados
+02:39            2118       1616  <- apagados
+02:40            2301       1618  <- apagados
+02:41            2138       1949
+```
+
+En un apagado real de ≈ 2.5 horas, al volver a encender Bluesky recuperó ≈ 370,000 eventos en un minuto (6,200 eventos/s) y Wikimedia ≈ 300,000 en dos. GDELT descargó los 10 lotes que se había perdido. El sink guardó ese atraso de ≈ 700,000 eventos reales en ≈ 6 minutos.
+
+### Verdad operativa: consultas puntuales
+
+`raw` responde consultas puntuales sobre el estado actual de los eventos usando índices. Además del `_id`, hay dos índices secundarios: `{data.title, received_at}` en Wikimedia y `{data.did, received_at}` en Bluesky. Resultados de `tests/consultas.js` con ≈ 3 millones de documentos por colección:
+
+| Consulta | Latencia | Documentos revisados | Shards consultados |
+| --- | --- | --- | --- |
+| Evento de GDELT por id | 1 ms | 1 | 1 |
+| Última edición de una página de Wikipedia | 3 ms | 1 | 2 |
+| Últimos 10 posts de una cuenta de Bluesky | 1 ms | 11 | 2 |
+| Estado actual de un post de Bluesky (todas sus versiones) | < 1 ms | 2 | 2 |
+
+La búsqueda por `_id` va a un solo shard porque la shard key es el hash del `_id`. Las demás se envían a ambos shards, pero cada uno responde con su índice sin recorrer la colección. El estado de un post se obtiene con su prefijo `did/rkey/` sobre el índice de `_id`, ordenado por `rev`. Para un post borrado, la versión más reciente es el `delete` y la creación ya no tiene texto:
+
+```
+delete  2026-11-23T02:38:46Z  texto: no
+create  2026-11-22T04:52:56Z  texto: no
+```
+
+### Garantía de caudal: pruebas de carga
+
+`tests/carga.sh` manda N ediciones sintéticas, con la forma de las de Wikimedia, lo más rápido posible a un tópico aparte (`carga`). El sink lo guarda en `raw.carga`, con el mismo sharding y las mismas garantías que las fuentes reales. El script espera a que todas estén en MongoDB, cuenta las que llegaron y al final borra los eventos de prueba.
+
+| Eventos | Tiempo total | Caudal de punta a punta | Perdidos |
+| --- | --- | --- | --- |
+| 100,000 | 12 s | ≈ 8,300 eventos/s | 0 |
+| 1,000,000 | 54 s | ≈ 18,500 eventos/s | 0 |
+
+La captura real promedia ≈ 75 eventos/s (≈ 6.5 millones al día). Con eventos reales, que pesan más (1 a 1.4 KB) y van a colecciones con más índices, el caudal baja a ≈ 2,000 eventos/s, como se vio al recuperar el apagado de 2.5 horas. Aun así es más de 25 veces el ritmo de llegada.
+
+### Resiliencia: fallos durante la carga
+
+La misma prueba con 300,000 eventos, con una falla a los 5 segundos. En las primeras cuatro, el proceso se mata desde fuera con `kill -9`, como si fallara solo, y la política `restart: unless-stopped` de Docker lo vuelve a levantar sin intervención.
+
+| Falla | Recuperación | Resultado |
+| --- | --- | --- |
+| Primario del shard `s1` | Docker reinició el nodo en 1 s. Otro miembro asumió como primario a los 11 s (el tiempo de espera de elección de MongoDB es de 10 s) y `s1-1` lo recuperó después por su prioridad. | 300,000 de 300,000 en 39 s |
+| Router `mongos` | Reiniciado en 1 s. El sink se reconectó solo. | 300,000 de 300,000 en 34 s |
+| Broker `kafka-2` | Reiniciado al instante. Los productores y el sink siguieron con los otros dos brokers. | 300,000 de 300,000 en 48 s |
+| Sink | Reiniciado al instante. Retomó desde el último offset confirmado. | 300,000 de 300,000 en 109 s |
+| Shard `s1` sin mayoría (2 de 3 nodos apagados durante 60 s) | `s1` no puede elegir primario y rechaza escrituras (CP). El sink falla y Docker lo reinicia hasta que el shard vuelve. Mientras tanto, los eventos esperan en Kafka. | 300,000 de 300,000 en 150 s |
+
+En ningún caso se perdió ni se duplicó un evento. La última prueba muestra en la práctica la justificación CAP: MongoDB prefiere dejar de escribir antes que aceptar datos inconsistentes, y Kafka absorbe esa falta de disponibilidad. La prueba con falla del sink tarda más porque el grupo de consumidores espera a que venza la sesión del miembro caído (45 s) antes de reasignar las particiones.
+
+### Cómo correr las pruebas
+
+```bash
+./tests/carga.sh 100000           # carga sin fallas
+./tests/carga.sh 300000 mongo     # también: router, kafka, sink, shard
+./tests/cursor.sh 120             # apaga los consumidores 2 minutos
+docker exec tw-mongo-router mongosh -u admin -p <contraseña> --authenticationDatabase admin \
+  --eval "$(cat tests/consultas.js)"
+```
+
 ## Limitaciones
 
-- **Una sola máquina física.** Las réplicas protegen contra la caída de procesos o nodos, no contra el apagado del equipo. Las pruebas de fallo se hacen a nivel de contenedor. El despliegue de referencia corre en una laptop que no está encendida 24/7, así que puede haber huecos en la captura.
+- **Una sola máquina física.** Las réplicas protegen contra la caída de procesos o nodos, no contra el apagado del equipo. Las pruebas de fallo se hacen a nivel de contenedor. El despliegue de referencia corre en una laptop que no está encendida 24/7. Al volver a encenderla, los consumidores recuperan lo que se perdió (ver la siguiente limitación).
 - **Mastodon sin borrados.** Ver [Consideraciones éticas](#consideraciones-éticas); se mitiga con el TTL de 7 días.
 - **GDELT llega por lotes** cada 15 minutos, no evento por evento.
 - **Neo4j Community** no tiene alta disponibilidad ni roles.
@@ -542,7 +652,7 @@ Pruebas hechas el 21 de noviembre de 2026 sobre el despliegue local.
 - **Sin TLS.** Las conexiones no van cifradas: todo corre en la red interna de Docker o en `127.0.0.1`. Habría que agregarlo antes de exponer cualquier servicio.
 - **Interfaz de Spark sin login.** El puerto 8080 solo se abre en `127.0.0.1`.
 - **Espacio en disco.** Con el TTL de 7 días, el oplog limitado a 2 GB por nodo y Kafka con 24 h de retención, el proyecto se estabiliza en unos 120 GB.
-- **Cursores en memoria.** Si un consumidor se reinicia, Bluesky y Wikimedia retoman desde el momento actual; persistir el cursor queda para la Etapa 3.
+- **Recuperación limitada.** Tras un apagado, cada fuente solo reenvía lo que todavía guarda su servicio. Además, el cursor vive en Kafka, que guarda 24 h: si el sistema está apagado más tiempo, la captura retoma desde el momento actual.
 
 ## Preguntas de análisis
 

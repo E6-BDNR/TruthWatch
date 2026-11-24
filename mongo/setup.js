@@ -1,6 +1,6 @@
 // Shards, colecciones e índices, roles y usuarios. Se corre en el router como admin.
 const env = process.env
-const sources = ['bluesky', 'wikimedia', 'mastodon', 'gdelt']
+const sources = ['bluesky', 'wikimedia', 'mastodon', 'gdelt', 'carga'] // carga: tests/carga.sh
 
 for (const s of ['s1', 's2']) {
   sh.addShard(`${s}/mongo-${s}-1:27017,mongo-${s}-2:27017,mongo-${s}-3:27017`)
@@ -19,6 +19,9 @@ for (const src of sources) {
     raw[src].createIndex({ received_at: 1 }, { expireAfterSeconds: ttl })
   }
 }
+// Consultas puntuales: últimas ediciones de una página y últimos posts de una cuenta
+raw.wikimedia.createIndex({ 'data.title': 1, received_at: -1 })
+raw.bluesky.createIndex({ 'data.did': 1, received_at: -1 })
 
 // Roles y usuarios
 const admin = db.getSiblingDB('admin')
